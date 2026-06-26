@@ -1,0 +1,22 @@
+*.db
+__pycache__/
+*.pyc
+.DS_Store
+
+# Synergy exploration/probe scripts (not production)
+synergy_explore.py
+synergy_full.py
+synergy_get_players.py
+synergy_get_players2.py
+synergy_intercept_player.py
+synergy_navigate.py
+synergy_playtypes.py
+synergy_playtypes2.py
+synergy_posessions.py
+synergy_posessions2.py
+synergy_probe.py
+synergy_probe2.py
+synergy_probe2b.py
+synergy_probe3.py
+synergy_probe_all.py
+synergy_probe_playtypes.py
