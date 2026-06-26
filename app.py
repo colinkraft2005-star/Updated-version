@@ -89,7 +89,6 @@ def init_db():
 
 
 def seed_roster_if_empty():
-    """Pre-load the 26-27 UCLA roster on first run only."""
     conn = sqlite3.connect('scouting_hub.db')
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM roster")
@@ -121,6 +120,27 @@ def seed_roster_if_empty():
 
 init_db()
 seed_roster_if_empty()
+
+
+# ==========================================
+# HELPER: check if a table exists and has data
+# ==========================================
+def table_has_data(table_name):
+    try:
+        conn = sqlite3.connect('scouting_hub.db')
+        count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception:
+        return False
+
+
+def not_loaded_banner(table_name, script_name):
+    st.warning(
+        f"No data found in `{table_name}`. "
+        f"This tab is populated by running **`{script_name}`** locally. "
+        f"Once that script has been run and `scouting_hub.db` is re-uploaded to GitHub, data will appear here."
+    )
 
 
 # ==========================================
@@ -192,14 +212,9 @@ def fetch_sr_headshot_silent(player_name, team_name=""):
 
 
 # ==========================================
-# ESPN STATS FETCHER (season per game)
+# ESPN STATS FETCHER
 # ==========================================
 def fetch_espn_stats(player_name, team_name=""):
-    """
-    Fetch per-game stats from ESPN using athlete statistics endpoint.
-    Finds athlete ID by searching ESPN, then hits their stats page.
-    Caches in SQLite after first fetch.
-    """
     conn = sqlite3.connect('scouting_hub.db')
     cursor = conn.cursor()
     cursor.execute(
@@ -238,7 +253,6 @@ def fetch_espn_stats(player_name, team_name=""):
             return 0
 
     try:
-        # Step 1: Search ESPN for athlete
         search_url = f"https://site.api.espn.com/apis/search/v2?query={urllib.parse.quote(player_name)}&sport=basketball&league=mens-college-basketball&limit=5&type=player"
         resp = requests.get(search_url, headers=headers, timeout=8, verify=False)
         data = resp.json()
@@ -253,7 +267,6 @@ def fetch_espn_stats(player_name, team_name=""):
             if athlete_id:
                 break
 
-        # Fallback: try site search
         if not athlete_id:
             search2 = f"https://site.api.espn.com/apis/common/v3/search?query={urllib.parse.quote(player_name)}&sport=basketball&league=mens-college-basketball&limit=5"
             resp2 = requests.get(search2, headers=headers, timeout=8, verify=False)
@@ -270,13 +283,11 @@ def fetch_espn_stats(player_name, team_name=""):
         if not athlete_id:
             return None
 
-        # Step 2: Get stats
         stats_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/athletes/{athlete_id}/statistics"
         stats_resp = requests.get(stats_url, headers=headers, timeout=8, verify=False)
         stats_data = stats_resp.json()
 
         gp = ppg = rpg = apg = spg = bpg = 0.0
-
         splits = stats_data.get("splits", {})
         categories = splits.get("categories", [])
 
@@ -298,7 +309,6 @@ def fetch_espn_stats(player_name, team_name=""):
 
         if gp > 0:
             result = {"gp": int(gp), "ppg": ppg, "rpg": rpg, "apg": apg, "spg": spg, "bpg": bpg}
-            # Cache it
             conn = sqlite3.connect('scouting_hub.db')
             cursor = conn.cursor()
             cursor.execute('''
@@ -319,120 +329,6 @@ def fetch_espn_stats(player_name, team_name=""):
         pass
 
     return None
-    conn = sqlite3.connect('scouting_hub.db')
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT gp, gs, mpg, ppg, rpg, apg, spg, bpg, tov, total_ast, total_tov FROM sr_stats_cache WHERE player_name = ?",
-        (player_name,)
-    )
-    cached = cursor.fetchone()
-    conn.close()
-
-    if cached and cached[0] and cached[0] > 0:
-        return {
-            "gp": cached[0], "gs": cached[1],
-            "total_pts": round(cached[3] * cached[0]) if cached[3] and cached[0] else 0,
-            "total_reb": round(cached[4] * cached[0]) if cached[4] and cached[0] else 0,
-            "total_ast": cached[9] or 0,
-            "total_tov": cached[10] or 0,
-        }
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
-
-    def safe_int(val):
-        try:
-            return int(float(str(val).strip())) if val else 0
-        except:
-            return 0
-
-    def safe_float(val):
-        try:
-            return float(str(val).strip()) if val else 0.0
-        except:
-            return 0.0
-
-    try:
-        # Search ESPN for player
-        search_name = urllib.parse.quote(player_name)
-        search_url = f"https://site.api.espn.com/apis/common/v3/search?query={search_name}&type=athlete&sport=basketball&league=mens-college-basketball&limit=5"
-        resp = requests.get(search_url, headers=headers, timeout=8, verify=False)
-        data = resp.json()
-
-        athlete_id = None
-        results = data.get("results", [])
-        for result in results:
-            for item in result.get("items", []):
-                name = item.get("displayName", "")
-                uid = item.get("id", "")
-                if name and uid:
-                    athlete_id = uid
-                    break
-            if athlete_id:
-                break
-
-        if not athlete_id:
-            return None
-
-        # Fetch stats
-        stats_url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/athletes/{athlete_id}/statistics"
-        stats_resp = requests.get(stats_url, headers=headers, timeout=8, verify=False)
-        stats_data = stats_resp.json()
-
-        # Parse the splits/categories
-        gp = gs = total_pts = total_reb = total_ast = total_tov = 0
-
-        splits = stats_data.get("splits", {})
-        categories = splits.get("categories", [])
-
-        for cat in categories:
-            cat_name = cat.get("name", "").lower()
-            if "total" in cat_name or "general" in cat_name or cat_name == "":
-                names  = cat.get("names", [])
-                totals = cat.get("totals", [])
-                stat_map = dict(zip(names, totals))
-                gp        = safe_int(stat_map.get("GP", stat_map.get("gamesPlayed", 0)))
-                gs        = safe_int(stat_map.get("GS", stat_map.get("gamesStarted", 0)))
-                total_pts = safe_int(stat_map.get("PTS", stat_map.get("points", 0)))
-                total_reb = safe_int(stat_map.get("REB", stat_map.get("totalRebounds", 0)))
-                total_ast = safe_int(stat_map.get("AST", stat_map.get("assists", 0)))
-                total_tov = safe_int(stat_map.get("TO",  stat_map.get("turnovers", 0)))
-                if gp > 0:
-                    break
-
-        result = {
-            "gp": gp, "gs": gs,
-            "total_pts": total_pts, "total_reb": total_reb,
-            "total_ast": total_ast, "total_tov": total_tov,
-        }
-
-        # Cache it
-        ppg = round(total_pts / gp, 1) if gp > 0 else 0.0
-        rpg = round(total_reb / gp, 1) if gp > 0 else 0.0
-        apg = round(total_ast / gp, 1) if gp > 0 else 0.0
-        conn = sqlite3.connect('scouting_hub.db')
-        cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO sr_stats_cache
-            (player_name, team_name, gp, gs, mpg, ppg, rpg, apg, spg, bpg, tov, total_ast, total_tov, fetched_at)
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?, 0, 0, 0, ?, ?, ?)
-            ON CONFLICT(player_name) DO UPDATE SET
-                gp=excluded.gp, gs=excluded.gs, ppg=excluded.ppg,
-                rpg=excluded.rpg, apg=excluded.apg,
-                total_ast=excluded.total_ast, total_tov=excluded.total_tov,
-                fetched_at=excluded.fetched_at
-        ''', (player_name, team_name, gp, gs, ppg, rpg, apg, total_ast, total_tov,
-              datetime.now().strftime("%Y-%m-%d")))
-        conn.commit()
-        conn.close()
-        return result
-
-    except Exception:
-        pass
-
-    return {"gp": 0, "gs": 0, "total_pts": 0, "total_reb": 0, "total_ast": 0, "total_tov": 0}
 
 
 # ==========================================
@@ -489,7 +385,6 @@ def fetch_barttorvik_safe(top_filter=None, retries=3, delay_between_requests=4):
             })
         return pd.DataFrame(cleaned_rows) if cleaned_rows else None
 
-    # Try cloudscraper FIRST (bypasses Cloudflare/bot detection)
     try:
         import cloudscraper
         scraper = cloudscraper.create_scraper()
@@ -501,7 +396,6 @@ def fetch_barttorvik_safe(top_filter=None, retries=3, delay_between_requests=4):
     except Exception:
         pass
 
-    # Fallback: standard requests
     for attempt in range(retries):
         try:
             response = requests.get(url, headers=headers, verify=False, timeout=20)
@@ -522,7 +416,6 @@ def load_all_data_v6():
     df = fetch_barttorvik_safe(top_filter=None)
     if df is None:
         return None
-    # Fetch basicstat in same call and merge PPG/RPG/APG
     try:
         url2 = 'https://barttorvik.com/getadvstats.php?year=2026&page=basicstat&json=1'
         raw2 = None
@@ -567,31 +460,25 @@ def load_all_data_v6():
     return df
 
 
-
-
 # ==========================================
 # SEQUENTIAL DATA LOAD WITH PROGRESS BAR
 # ==========================================
 load_bar = st.progress(0, text="Loading full database...")
 df_all = load_all_data_v6()
 
-
 load_bar.progress(100, text="Database ready.")
 time.sleep(0.4)
 load_bar.empty()
 
 failed = []
-if df_all is None:    failed.append("All Games")
-
+if df_all is None:
+    failed.append("All Games")
 
 if failed:
     st.error(
-        f"BartTorvik returned empty data for: **{', '.join(failed)}**\n\n"
-        "This usually means your IP is temporarily rate-limited by the server. "
-        "Try one of the following:\n"
-        "- Wait 10-15 minutes and rerun\n"
-        "- Switch to your phone hotspot and rerun\n"
-        "- Connect to a VPN and rerun"
+        f"BartTorvik returned empty data.\n\n"
+        "This usually means your IP is temporarily rate-limited. "
+        "Wait 10-15 minutes or switch networks and reload."
     )
     st.stop()
 
@@ -611,14 +498,19 @@ with head_col2:
                 unsafe_allow_html=True)
 st.write("***")
 
-tab_depth, tab5, tab_comp, tab2, tab3, tab4 = st.tabs([
+tab_depth, tab5, tab_comp, tab2, tab3, tab4, tab_portal, tab_gamelogs, tab_synergy, tab_shotcharts = st.tabs([
     "Depth Chart",
     "Player Card",
     "Comp Results",
     "Portal Discovery Engine",
     "Front Office Target Board",
     "Big Board Print View",
+    "Transfer Portal",
+    "Game Logs",
+    "Synergy",
+    "Shot Charts",
 ])
+
 
 # ==========================================
 # TAB: DEPTH CHART
@@ -628,9 +520,9 @@ with tab_depth:
 
     with st.expander("Edit Roster", expanded=False):
         st.caption(
-            "Add, remove, or reorder players. **Position** must be one of PG / CG / SF / PF / C. "
-            "**Depth** sets the stacking order (1 = starter). For stats to auto-link, **BT Name** must "
-            "match the player's exact BartTorvik spelling — leave it blank for freshmen / walk-ons."
+            "Add, remove, or reorder players. Position must be one of PG / CG / SF / PF / C. "
+            "Depth sets the stacking order (1 = starter). For stats to auto-link, BT Name must "
+            "match the player's exact BartTorvik spelling."
         )
 
         conn = sqlite3.connect('scouting_hub.db')
@@ -764,34 +656,29 @@ with tab_depth:
                         st.rerun()
 
     st.write("")
-    st.caption("⭐ Yellow = projected starter · Dashed yellow = open slot · "
-               "Returning/transfer players show live BartTorvik metrics; incoming freshmen show roster notes.")
-
+    st.caption("Yellow = projected starter · Dashed yellow = open slot · "
+               "Returning/transfer players show live BartTorvik metrics.")
 
 
 # ==========================================
 # SHARED POSITION DETECTION
 # ==========================================
 def detect_pos_group(torvik_pos, saved_pos, height_str, ast_rate):
-    """Detect position group using Torvik position data first."""
-    # Use Torvik position string (e.g. 'G', 'F', 'C', 'G/F', 'F/C')
     tp = str(torvik_pos).upper().strip()
     if tp and tp not in ["", "NONE", "NAN"]:
         if tp in ["PG", "SG", "G"]: return "G"
-        if tp in ["SF", "PF", "F"]: return "F"  
+        if tp in ["SF", "PF", "F"]: return "F"
         if tp in ["C"]: return "C"
         if "/" in tp:
             parts = tp.split("/")
             if parts[0] in ["G"]: return "G"
             if parts[0] in ["F"]: return "F"
             if parts[0] in ["C"]: return "C"
-    # Fall back to saved position from DB
     if saved_pos:
         p = str(saved_pos).upper()
         if any(x in p for x in ["PG","CG","G"]): return "G"
         if any(x in p for x in ["PF","F","W","SF","WING"]): return "F"
         if "C" in p: return "C"
-    # Last resort: height (handles 7'3" and 7-3 formats)
     try:
         ht = str(height_str).replace('"','').strip()
         if "'" in ht:
@@ -808,8 +695,9 @@ def detect_pos_group(torvik_pos, saved_pos, height_str, ast_rate):
         else: return "G"
     except: return "G"
 
+
 # ==========================================
-# COMP ENGINE (top-level)
+# COMP ENGINE
 # ==========================================
 def parse_ht(ht_str):
     try:
@@ -909,7 +797,7 @@ def run_comps(target_row, all_df, pos_group, n=8):
 
 
 # ==========================================
-# TAB COMP: COMP RESULTS (active player)
+# TAB: COMP RESULTS
 # ==========================================
 with tab_comp:
     st.subheader("Comp Results")
@@ -920,7 +808,6 @@ with tab_comp:
     else:
         comp_data = df_all[df_all["PLAYER"] == active].iloc[0]
 
-        # Pull saved position
         conn = sqlite3.connect('scouting_hub.db')
         cursor = conn.cursor()
         cursor.execute("SELECT position FROM player_notes WHERE player_name = ?", (active,))
@@ -930,7 +817,6 @@ with tab_comp:
 
         cr_pos = detect_pos_group(comp_data.get("TORVIK_POS",""), comp_saved_pos, comp_data.get("HEIGHT",""), comp_data.get("AST",0))
 
-        # Player header
         st.markdown(f"**Running comps for: {active}**")
         cr1, cr2, cr3, cr4, cr5 = st.columns(5)
         cr1.metric("Team",   comp_data["TEAM"])
@@ -1000,7 +886,7 @@ with tab_comp:
 
 
 # ==========================================
-# TAB 2: PORTAL DISCOVERY ENGINE
+# TAB: PORTAL DISCOVERY ENGINE
 # ==========================================
 with tab2:
     st.subheader("Database Sifting & Portal Filtering")
@@ -1008,8 +894,6 @@ with tab2:
     disc_base_df = df_all
 
     with st.expander("Advanced Database Filters", expanded=False):
-        st.write("Adjust parameters to filter the active portal pool.")
-
         col_cat1, col_cat2, col_cat3 = st.columns(3)
         with col_cat1:
             conf_options = sorted(list(df_all["CONF"].unique()))
@@ -1090,9 +974,8 @@ with tab2:
     remaining_cols = [c for c in filtered_df.columns if c not in ordered_cols]
     filtered_df = filtered_df[ordered_cols + remaining_cols]
 
-    st.write(f"**Filter Results (All Games):** Found {len(filtered_df)} profiles matching criteria.")
+    st.write(f"**Filter Results:** Found {len(filtered_df)} profiles matching criteria.")
 
-    # ---- INLINE PREVIEW (shows when a row is clicked) ----
     if st.session_state.get("disc_selected_player") and st.session_state.disc_selected_player in df_all["PLAYER"].values:
         preview_player = st.session_state.disc_selected_player
         preview_data = df_all[df_all["PLAYER"] == preview_player].iloc[0]
@@ -1142,31 +1025,7 @@ with tab2:
                     f"{preview_data['CLASS']} &nbsp;·&nbsp; {preview_data['HEIGHT']}</div>",
                     unsafe_allow_html=True
                 )
-# TAB 2 CONTINUED: dataframe + click handler
-# ==========================================
-    st.write(f"**Filter Results (All Games):** Found {len(filtered_df)} profiles matching criteria.")
 
-    if st.session_state.get("disc_selected_player") and st.session_state.disc_selected_player in df_all["PLAYER"].values:
-        preview_player = st.session_state.disc_selected_player
-        preview_data = df_all[df_all["PLAYER"] == preview_player].iloc[0]
-        conn = sqlite3.connect('scouting_hub.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT position, photo_url, coach_notes FROM player_notes WHERE player_name = ?", (preview_player,))
-        preview_db = cursor.fetchone()
-        conn.close()
-        preview_pos   = preview_db[0] if preview_db and preview_db[0] else ""
-        preview_photo = preview_db[1] if preview_db and preview_db[1] else ""
-        preview_notes = preview_db[2] if preview_db and preview_db[2] else ""
-        if not preview_photo:
-            preview_photo = fetch_sr_headshot_silent(preview_player, preview_data["TEAM"])
-        with st.container(border=True):
-            ph_col, pi_col = st.columns([1, 4])
-            with ph_col:
-                if preview_photo:
-                    st.image(preview_photo, width=110)
-            with pi_col:
-                st.markdown(f"<div style='font-size:20px;font-weight:900;color:#FFFFFF;'>{preview_player}</div>", unsafe_allow_html=True)
-                st.markdown(f"<div style='font-size:12px;color:#94a3b8;'>{preview_data['TEAM']} · {preview_data['CONF']} · {preview_data['CLASS']} · {preview_data['HEIGHT']}</div>", unsafe_allow_html=True)
             st.write("")
             pc1, pc2, pc3, pc4, pc5, pc6 = st.columns(6)
             pc1.metric("PPG",  f"{preview_data.get('PPG', 0.0):.1f}")
@@ -1178,12 +1037,17 @@ with tab2:
 
             pg = detect_pos_group(preview_data.get("TORVIK_POS",""), preview_pos, preview_data.get("HEIGHT",""), preview_data.get("AST",0))
             pg = st.radio("Position:", ["G","F","C"], index=["G","F","C"].index(pg), horizontal=True, key="disc_pos_radio_top")
-            p_ortg = preview_data.get("ORTG",0.0); p_apg = preview_data.get("APG",0.0)
-            p_to = preview_data.get("TO",0.0); p_stl = preview_data.get("STL",0.0)
-            p_blk = preview_data.get("BLK",0.0); p_ast = preview_data.get("AST",0.0)
-            p_or = preview_data.get("OR",0.0); p_dr = preview_data.get("DR",0.0)
-            p_bpm = preview_data.get("BPM",0.0); p_min = preview_data.get("MIN_PCT",0.0)
-            p_ato = round(p_ast / p_to, 2) if p_to and p_to > 0 else 0.0
+            p_ortg = preview_data.get("ORTG",0.0)
+            p_to   = preview_data.get("TO",0.0)
+            p_stl  = preview_data.get("STL",0.0)
+            p_blk  = preview_data.get("BLK",0.0)
+            p_ast  = preview_data.get("AST",0.0)
+            p_or   = preview_data.get("OR",0.0)
+            p_dr   = preview_data.get("DR",0.0)
+            p_bpm  = preview_data.get("BPM",0.0)
+            p_min  = preview_data.get("MIN_PCT",0.0)
+            p_ato  = round(p_ast / p_to, 2) if p_to and p_to > 0 else 0.0
+
             if pg == "G":
                 g1,g2,g3,g4,g5 = st.columns(5)
                 g1.metric("MIN%", f"{p_min:.1f}%"); g2.metric("ORTG", f"{p_ortg:.1f}")
@@ -1196,6 +1060,7 @@ with tab2:
                 c1,c2,c3,c4,c5 = st.columns(5)
                 c1.metric("ORTG", f"{p_ortg:.1f}"); c2.metric("OREB%", f"{p_or:.1f}%")
                 c3.metric("DREB%", f"{p_dr:.1f}%"); c4.metric("TO%", f"{p_to:.1f}%"); c5.metric("BLK%", f"{p_blk:.1f}%")
+
             st.markdown("**Coach Notes**")
             disc_notes = st.text_area("Notes:", value=preview_notes, height=100, key="disc_coach_notes")
             if st.button("Save Notes", key="disc_save_notes", type="primary"):
@@ -1218,7 +1083,7 @@ with tab2:
 
 
 # ==========================================
-# TAB 3: FRONT OFFICE TARGET BOARD
+# TAB: FRONT OFFICE TARGET BOARD
 # ==========================================
 with tab3:
     st.subheader("Central Board Records")
@@ -1251,7 +1116,7 @@ with tab3:
 
 
 # ==========================================
-# TAB 4: BIG BOARD PRINT VIEW
+# TAB: BIG BOARD PRINT VIEW
 # ==========================================
 with tab4:
     st.subheader("Staff Roster Print Layout")
@@ -1283,7 +1148,6 @@ with tab4:
                             meta_line = f"{s['HEIGHT']} | {s['CLASS']}"
                         else:
                             stat_line = "No stats linked"; meta_line = "N/A"
-                        photo = player["photo_url"] if player["photo_url"] else "https://via.placeholder.com/150"
                         role_label = player["role"] if player["role"] else "Unassigned"
                         team_name = player["team_name"]
                         st.markdown(
@@ -1291,13 +1155,13 @@ with tab4:
                             f"<div style='font-size:14px;font-weight:bold;color:#0F172A;'>{p_name}</div>"
                             f"<div style='font-size:11px;color:#475569;'>{team_name}</div>"
                             f"<div style='font-size:11px;color:#64748B;'>{meta_line}</div>"
-                            f"<div style='font-size:10px;color:#1E40AF;margin-top:4px;'>🎯 {role_label}</div>"
-                            f"<div style='font-size:9.5px;color:#475569;'>📊 {stat_line}</div>"
+                            f"<div style='font-size:10px;color:#1E40AF;margin-top:4px;'>Target: {role_label}</div>"
+                            f"<div style='font-size:9.5px;color:#475569;'>{stat_line}</div>"
                             f"</div>", unsafe_allow_html=True)
 
 
 # ==========================================
-# TAB 5: PLAYER CARD
+# TAB: PLAYER CARD
 # ==========================================
 with tab5:
     st.subheader("Player Card")
@@ -1329,7 +1193,6 @@ with tab5:
                 (card_player, card_data["TEAM"], card_photo))
             conn.commit(); conn.close()
 
-    # Header
     st.markdown("---")
     col_img, col_info = st.columns([1, 5])
     with col_img:
@@ -1342,8 +1205,6 @@ with tab5:
         st.markdown(f"<div style='font-size:13px;color:#94a3b8;'>{card_data['TEAM']} · {card_data['CONF']} · {card_data['CLASS']} · {card_data['HEIGHT']}</div>", unsafe_allow_html=True)
 
     st.markdown("---")
-
-    # Core stats - all from Torvik
     st.markdown("**Core Stats**")
 
     gp      = int(card_data.get("GP", 0))
@@ -1375,14 +1236,11 @@ with tab5:
 
     st.markdown("---")
 
-    # Position-specific stats (no overlap with core stats above)
     auto_pos = detect_pos_group(card_data.get("TORVIK_POS",""), card_pos, card_data.get("HEIGHT",""), card_data.get("AST",0))
     pos_group = st.radio("Position group:", ["G","F","C"], index=["G","F","C"].index(auto_pos), horizontal=True, key="card_pos_group_radio")
 
     ortg    = card_data.get("ORTG", 0.0)
     to_pct  = card_data.get("TO", 0.0)
-    stl_pct = card_data.get("STL", 0.0)
-    blk_pct = card_data.get("BLK", 0.0)
     ast_pct = card_data.get("AST", 0.0)
     orb_pct = card_data.get("OR", 0.0)
     drb_pct = card_data.get("DR", 0.0)
@@ -1406,8 +1264,6 @@ with tab5:
         c3.metric("DREB%", f"{drb_pct:.1f}%"); c4.metric("TO%", f"{to_pct:.1f}%"); c5.metric("BLK%", f"{blk_pct:.1f}%")
 
     st.markdown("---")
-
-    # Coach Notes
     st.markdown("**Coach Notes**")
     coach_notes_input = st.text_area("Notes:", value=saved_coach_notes, height=140,
         placeholder="Add intel, impressions, fit evaluation...", key="coach_notes_area")
@@ -1421,5 +1277,418 @@ with tab5:
         st.success(f"Notes saved for {card_player}.")
         st.rerun()
 
-    st.markdown("<style>@media print { header, footer, [data-testid='stSidebar'], [data-testid='stToolbar'], .stTabs [role='tablist'], .stSelectbox, .stRadio, .stButton, .stTextArea, .stCaption { display: none !important; } [data-testid='stAppViewContainer'] { padding: 0 !important; } }</style>", unsafe_allow_html=True)
-    st.caption("File → Print to print this card clean.")
+    st.markdown("<style>@media print { header, footer, [data-testid='stSidebar'], [data-testid='stToolbar'], .stTabs [role='tablist'], .stSelectbox, .stRadio, .stButton, .stTextArea, .stCaption { display: none !important; } }</style>", unsafe_allow_html=True)
+    st.caption("File > Print to print this card clean.")
+
+
+# ==========================================
+# TAB: TRANSFER PORTAL (srating.io data)
+# ==========================================
+with tab_portal:
+    st.subheader("Transfer Portal Browser")
+    st.caption("Data sourced from srating.io via build_transfer_portal.py")
+
+    if not table_has_data("transfer_portal"):
+        not_loaded_banner("transfer_portal", "build_transfer_portal.py")
+    else:
+        conn = sqlite3.connect('scouting_hub.db')
+        portal_df = pd.read_sql_query("""
+            SELECT
+                first_name || ' ' || last_name AS Player,
+                position AS Pos,
+                height AS Ht,
+                from_team AS From,
+                to_team AS To,
+                committed,
+                rank AS Rank,
+                elo AS ELO,
+                games AS GP,
+                mpg AS MPG,
+                ppg AS PPG,
+                rpg AS RPG,
+                apg AS APG,
+                spg AS SPG,
+                bpg AS BPG,
+                ts_pct AS [TS%],
+                efg_pct AS [eFG%],
+                usg_pct AS [USG%],
+                ortg AS ORTG,
+                oreb_pct AS [OREB%],
+                dreb_pct AS [DREB%],
+                ast_pct AS [AST%],
+                stl_pct AS [STL%],
+                blk_pct AS [BLK%],
+                tov_pct AS [TOV%]
+            FROM transfer_portal
+            ORDER BY rank ASC
+        """, conn)
+        conn.close()
+
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            pos_filter = st.multiselect("Position:", sorted(portal_df["Pos"].dropna().unique()), key="portal_pos")
+        with p2:
+            committed_filter = st.selectbox("Status:", ["All", "Committed", "Available"], key="portal_committed")
+        with p3:
+            portal_search = st.text_input("Search player:", key="portal_search")
+
+        if pos_filter:
+            portal_df = portal_df[portal_df["Pos"].isin(pos_filter)]
+        if committed_filter == "Committed":
+            portal_df = portal_df[portal_df["committed"] == 1]
+        elif committed_filter == "Available":
+            portal_df = portal_df[portal_df["committed"] == 0]
+        if portal_search:
+            portal_df = portal_df[portal_df["Player"].str.contains(portal_search, case=False, na=False)]
+
+        portal_df = portal_df.drop(columns=["committed"])
+        st.write(f"**{len(portal_df)} players**")
+        st.dataframe(portal_df, hide_index=True, use_container_width=True, height=700)
+
+
+# ==========================================
+# TAB: GAME LOGS
+# ==========================================
+with tab_gamelogs:
+    st.subheader("Game Logs & Splits")
+    st.caption("Data sourced from ESPN box scores via build_game_logs.py")
+
+    if not table_has_data("player_game_logs"):
+        not_loaded_banner("player_game_logs", "build_game_logs.py")
+    else:
+        conn = sqlite3.connect('scouting_hub.db')
+        gl_players = [r[0] for r in conn.execute(
+            "SELECT DISTINCT player_name FROM player_game_logs ORDER BY player_name"
+        ).fetchall()]
+        conn.close()
+
+        gl_selected = st.selectbox("Select player:", gl_players, key="gl_player_select")
+
+        opp_rank_filter = st.select_slider(
+            "Filter by opponent rank (KenPom):",
+            options=["All", "Top 25", "Top 50", "Top 100"],
+            value="All",
+            key="gl_opp_filter"
+        )
+
+        conn = sqlite3.connect('scouting_hub.db')
+        gl_query = """
+            SELECT
+                game_date AS Date,
+                opponent_name AS Opponent,
+                COALESCE(kp_opp_rank, opp_rank, 999) AS [Opp Rank],
+                min_played AS MIN,
+                pts AS PTS,
+                reb AS REB,
+                orb AS ORB,
+                drb AS DRB,
+                ast AS AST,
+                tov AS TOV,
+                stl AS STL,
+                blk AS BLK,
+                fg_made || '-' || fg_att AS FG,
+                fg3_made || '-' || fg3_att AS [3PT],
+                ft_made || '-' || ft_att AS FT
+            FROM player_game_logs
+            WHERE player_name = ?
+            ORDER BY game_date DESC
+        """
+        gl_df = pd.read_sql_query(gl_query, conn, params=(gl_selected,))
+        conn.close()
+
+        if opp_rank_filter == "Top 25":
+            gl_df = gl_df[gl_df["Opp Rank"] <= 25]
+        elif opp_rank_filter == "Top 50":
+            gl_df = gl_df[gl_df["Opp Rank"] <= 50]
+        elif opp_rank_filter == "Top 100":
+            gl_df = gl_df[gl_df["Opp Rank"] <= 100]
+
+        if gl_df.empty:
+            st.info("No game logs found for this player with the selected filters.")
+        else:
+            avg_pts = gl_df["PTS"].mean()
+            avg_reb = gl_df["REB"].mean()
+            avg_ast = gl_df["AST"].mean()
+            avg_tov = gl_df["TOV"].mean()
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Games", len(gl_df))
+            m2.metric("PPG",  f"{avg_pts:.1f}")
+            m3.metric("RPG",  f"{avg_reb:.1f}")
+            m4.metric("APG",  f"{avg_ast:.1f}")
+            m5.metric("TOPG", f"{avg_tov:.1f}")
+
+            st.dataframe(gl_df, hide_index=True, use_container_width=True, height=600)
+
+
+# ==========================================
+# TAB: SYNERGY PLAY TYPES
+# ==========================================
+with tab_synergy:
+    st.subheader("Synergy Play Type Breakdown")
+    st.caption("Data sourced from Synergy Sports via build_synergy_playtypes.py and build_synergy_enriched.py")
+
+    has_playtypes = table_has_data("synergy_playtypes")
+    has_shots     = table_has_data("synergy_shots")
+    has_drives    = table_has_data("synergy_drives")
+    has_defense   = table_has_data("synergy_defense")
+
+    if not has_playtypes and not has_shots and not has_drives and not has_defense:
+        not_loaded_banner("synergy_playtypes / synergy_shots / synergy_drives / synergy_defense",
+                          "build_synergy_playtypes.py + build_synergy_enriched.py")
+    else:
+        conn = sqlite3.connect('scouting_hub.db')
+        if has_playtypes:
+            syn_players = [r[0] for r in conn.execute(
+                "SELECT DISTINCT player_name FROM synergy_playtypes ORDER BY player_name"
+            ).fetchall()]
+        else:
+            syn_players = []
+        conn.close()
+
+        if not syn_players:
+            st.info("Play type data not yet loaded.")
+        else:
+            syn_selected = st.selectbox("Select player:", syn_players, key="syn_player_select")
+
+            syn_tab1, syn_tab2, syn_tab3, syn_tab4 = st.tabs(["Play Types", "Shooting", "Drives", "Defense"])
+
+            with syn_tab1:
+                if has_playtypes:
+                    conn = sqlite3.connect('scouting_hub.db')
+                    pt_df = pd.read_sql_query("""
+                        SELECT
+                            play_type AS [Play Type],
+                            possessions AS Poss,
+                            ROUND(freq_pct, 1) AS [Freq%],
+                            ROUND(ppp, 3) AS PPP,
+                            ROUND(points, 1) AS Pts
+                        FROM synergy_playtypes
+                        WHERE player_name = ?
+                        ORDER BY possessions DESC
+                    """, conn, params=(syn_selected,))
+                    conn.close()
+
+                    if pt_df.empty:
+                        st.info("No play type data for this player.")
+                    else:
+                        total_poss = pt_df["Poss"].sum()
+                        st.markdown(f"**{syn_selected} — {total_poss} total possessions tracked**")
+                        st.dataframe(pt_df, hide_index=True, use_container_width=True)
+                else:
+                    not_loaded_banner("synergy_playtypes", "build_synergy_playtypes.py")
+
+            with syn_tab2:
+                if has_shots:
+                    conn = sqlite3.connect('scouting_hub.db')
+                    shot_row = conn.execute("""
+                        SELECT total_shots, fg_attempt, fg_made, fg2_attempt, fg2_made,
+                               fg3_attempt, fg3_made, fg_pct, fg2_pct, fg3_pct,
+                               efg_pct, ppp, assist_pct, shot_foul_rate, block_pct,
+                               avg_def_distance, games_played
+                        FROM synergy_shots WHERE player_name = ?
+                    """, (syn_selected,)).fetchone()
+                    conn.close()
+
+                    if not shot_row:
+                        st.info("No shooting data for this player.")
+                    else:
+                        s1,s2,s3,s4 = st.columns(4)
+                        s1.metric("FG%",  f"{(shot_row[7] or 0)*100:.1f}%")
+                        s2.metric("2P%",  f"{(shot_row[8] or 0)*100:.1f}%")
+                        s3.metric("3P%",  f"{(shot_row[9] or 0)*100:.1f}%")
+                        s4.metric("eFG%", f"{(shot_row[10] or 0)*100:.1f}%")
+                        s5,s6,s7,s8 = st.columns(4)
+                        s5.metric("PPP",        f"{shot_row[11] or 0:.3f}")
+                        s6.metric("Assisted%",  f"{(shot_row[12] or 0)*100:.1f}%")
+                        s7.metric("Block%",     f"{(shot_row[14] or 0)*100:.1f}%")
+                        s8.metric("Avg Def Dist", f"{shot_row[15] or 0:.1f} in")
+                else:
+                    not_loaded_banner("synergy_shots", "build_synergy_enriched.py")
+
+            with syn_tab3:
+                if has_drives:
+                    conn = sqlite3.connect('scouting_hub.db')
+                    drv_row = conn.execute("""
+                        SELECT total_drives, drives_per_game, ppp, fg_pct,
+                               shot_rate, pass_rate, foul_rate, turnover_rate,
+                               assist_made, games_played
+                        FROM synergy_drives WHERE player_name = ?
+                    """, (syn_selected,)).fetchone()
+                    conn.close()
+
+                    if not drv_row:
+                        st.info("No drive data for this player.")
+                    else:
+                        d1,d2,d3,d4 = st.columns(4)
+                        d1.metric("Drives/Game", f"{drv_row[1] or 0:.1f}")
+                        d2.metric("PPP",         f"{drv_row[2] or 0:.3f}")
+                        d3.metric("FG% on Drives", f"{(drv_row[3] or 0)*100:.1f}%")
+                        d4.metric("Assists",     drv_row[8] or 0)
+                        d5,d6,d7,d8 = st.columns(4)
+                        d5.metric("Shot Rate",  f"{(drv_row[4] or 0)*100:.1f}%")
+                        d6.metric("Pass Rate",  f"{(drv_row[5] or 0)*100:.1f}%")
+                        d7.metric("Foul Rate",  f"{(drv_row[6] or 0)*100:.1f}%")
+                        d8.metric("TO Rate",    f"{(drv_row[7] or 0)*100:.1f}%")
+                else:
+                    not_loaded_banner("synergy_drives", "build_synergy_enriched.py")
+
+            with syn_tab4:
+                if has_defense:
+                    conn = sqlite3.connect('scouting_hub.db')
+                    def_row = conn.execute("""
+                        SELECT total_def_chances, live_ball_tos_forced, blocks, rotations,
+                               stopped_drives, stopped_picks, stopped_isolations, stopped_posts,
+                               total_closeouts, closeout_fg_attempt, closeout_fg_made,
+                               closeout_fg_pct, closeout_ppp_allowed
+                        FROM synergy_defense WHERE player_name = ?
+                    """, (syn_selected,)).fetchone()
+                    conn.close()
+
+                    if not def_row:
+                        st.info("No defensive data for this player.")
+                    else:
+                        e1,e2,e3,e4 = st.columns(4)
+                        e1.metric("Def Chances",    def_row[0] or 0)
+                        e2.metric("Live Ball TOs",  def_row[1] or 0)
+                        e3.metric("Blocks",         def_row[2] or 0)
+                        e4.metric("Rotations",      def_row[3] or 0)
+                        st.markdown("**Stops by Play Type**")
+                        e5,e6,e7,e8 = st.columns(4)
+                        e5.metric("Drive Stops",    def_row[4] or 0)
+                        e6.metric("P&R Stops",      def_row[5] or 0)
+                        e7.metric("ISO Stops",      def_row[6] or 0)
+                        e8.metric("Post Stops",     def_row[7] or 0)
+                        st.markdown("**Closeout Defense**")
+                        e9,e10,e11 = st.columns(3)
+                        e9.metric("Closeouts",      def_row[8] or 0)
+                        e10.metric("Opp FG% vs Closeout", f"{(def_row[11] or 0)*100:.1f}%")
+                        e11.metric("PPP Allowed",   f"{def_row[12] or 0:.3f}")
+                else:
+                    not_loaded_banner("synergy_defense", "build_synergy_enriched.py")
+
+
+# ==========================================
+# TAB: SHOT CHARTS
+# ==========================================
+with tab_shotcharts:
+    st.subheader("Shot Charts")
+    st.caption("Data sourced from ESPN play-by-play via build_shot_charts.py")
+
+    if not table_has_data("shot_chart"):
+        not_loaded_banner("shot_chart", "build_shot_charts.py")
+    else:
+        conn = sqlite3.connect('scouting_hub.db')
+        sc_players = [r[0] for r in conn.execute(
+            "SELECT DISTINCT player_name FROM shot_chart WHERE player_name IS NOT NULL ORDER BY player_name"
+        ).fetchall()]
+        conn.close()
+
+        sc_selected = st.selectbox("Select player:", sc_players, key="sc_player_select")
+
+        conn = sqlite3.connect('scouting_hub.db')
+        sc_df = pd.read_sql_query("""
+            SELECT coord_x_norm AS x, coord_y_norm AS y,
+                   scoring_play AS made, shot_type AS type,
+                   points_attempted AS pts_att, game_date AS date
+            FROM shot_chart
+            WHERE player_name = ?
+              AND coord_x_norm IS NOT NULL
+              AND coord_y_norm IS NOT NULL
+            ORDER BY game_date DESC
+        """, conn, params=(sc_selected,))
+        conn.close()
+
+        if sc_df.empty:
+            st.info("No shot chart data found for this player.")
+        else:
+            total = len(sc_df)
+            made  = sc_df["made"].sum()
+            pct   = made / total * 100 if total > 0 else 0
+
+            sc1, sc2, sc3 = st.columns(3)
+            sc1.metric("Total Shots", total)
+            sc2.metric("Made",        int(made))
+            sc3.metric("FG%",         f"{pct:.1f}%")
+
+            # Draw half-court SVG with shot dots
+            import html as html_lib
+
+            def build_shot_chart_svg(df):
+                # Half-court is 50ft wide x 47ft long (y=0 at baseline, y=47 at half)
+                scale = 8
+                w = 50 * scale
+                h = 47 * scale
+                padding = 20
+
+                circles = []
+                for _, row in df.iterrows():
+                    try:
+                        cx = float(row["x"]) * scale + padding
+                        cy = h - float(row["y"]) * scale + padding
+                        color = "#2774AE" if row["made"] else "#DC2626"
+                        circles.append(
+                            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="3" '
+                            f'fill="{color}" fill-opacity="0.7" stroke="white" stroke-width="0.5"/>'
+                        )
+                    except Exception:
+                        continue
+
+                svg = f"""
+                <svg width="{w + padding*2}" height="{h + padding*2}" xmlns="http://www.w3.org/2000/svg">
+                  <rect width="100%" height="100%" fill="#1e293b" rx="8"/>
+                  <!-- Court outline -->
+                  <rect x="{padding}" y="{padding}" width="{w}" height="{h}"
+                        fill="#0f172a" stroke="#334155" stroke-width="2"/>
+                  <!-- Paint (16ft wide x 19ft tall) -->
+                  <rect x="{padding + 17*scale}" y="{padding + (47-19)*scale}" width="{16*scale}" height="{19*scale}"
+                        fill="none" stroke="#334155" stroke-width="1.5"/>
+                  <!-- Free throw circle -->
+                  <circle cx="{padding + 25*scale}" cy="{padding + (47-19)*scale}"
+                          r="{6*scale}" fill="none" stroke="#334155" stroke-width="1.5"/>
+                  <!-- Basket -->
+                  <circle cx="{padding + 25*scale}" cy="{padding + (47-4.75)*scale}"
+                          r="{0.75*scale}" fill="none" stroke="#FFD100" stroke-width="2"/>
+                  <!-- Backboard -->
+                  <line x1="{padding + 22*scale}" y1="{padding + (47-4)*scale}"
+                        x2="{padding + 28*scale}" y2="{padding + (47-4)*scale}"
+                        stroke="#FFD100" stroke-width="2"/>
+                  <!-- 3pt arc (simplified) -->
+                  <path d="M {padding + 3*scale} {padding + (47-14)*scale}
+                           Q {padding + 25*scale} {padding - 5}
+                           {padding + 47*scale} {padding + (47-14)*scale}"
+                        fill="none" stroke="#334155" stroke-width="1.5" stroke-dasharray="4,2"/>
+                  <!-- Corner 3pt lines -->
+                  <line x1="{padding + 3*scale}" y1="{padding + (47-14)*scale}"
+                        x2="{padding + 3*scale}" y2="{padding + h}"
+                        stroke="#334155" stroke-width="1.5"/>
+                  <line x1="{padding + 47*scale}" y1="{padding + (47-14)*scale}"
+                        x2="{padding + 47*scale}" y2="{padding + h}"
+                        stroke="#334155" stroke-width="1.5"/>
+                  <!-- Shot dots -->
+                  {''.join(circles)}
+                </svg>
+                """
+                return svg
+
+            svg_chart = build_shot_chart_svg(sc_df)
+
+            legend_col, chart_col = st.columns([1, 4])
+            with legend_col:
+                st.markdown("""
+                    <div style='margin-top:40px;'>
+                        <div style='margin-bottom:8px;'>
+                            <span style='background:#2774AE;display:inline-block;width:12px;height:12px;border-radius:50%;'></span>
+                            <span style='color:#94a3b8;font-size:12px;margin-left:6px;'>Made</span>
+                        </div>
+                        <div>
+                            <span style='background:#DC2626;display:inline-block;width:12px;height:12px;border-radius:50%;'></span>
+                            <span style='color:#94a3b8;font-size:12px;margin-left:6px;'>Missed</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+            with chart_col:
+                st.markdown(svg_chart, unsafe_allow_html=True)
+
+            with st.expander("Raw Shot Log"):
+                st.dataframe(sc_df, hide_index=True, use_container_width=True)
